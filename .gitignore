@@ -37,6 +37,9 @@
 # Visual Studio cache directory
 .vs/
 
+# VS Code — Unity의 VS Code 연동 패키지가 자동 생성한다. 개인 에디터 설정이라 올리지 않는다.
+.vscode/
+
 # Gradle cache directory
 .gradle/
 
