@@ -109,6 +109,7 @@ public class ShaderDeformBlob : MonoBehaviour, IBlob
     static readonly int IdWobbleAxis = Shader.PropertyToID("_WobbleAxis");
     static readonly int IdWobbleAmount = Shader.PropertyToID("_WobbleAmount");
     static readonly int IdWobblePhase = Shader.PropertyToID("_WobblePhase");
+    static readonly int IdWobbleFreq = Shader.PropertyToID("_WobbleFreq");
     static readonly int IdSquash = Shader.PropertyToID("_SquashAmount");
     static readonly int IdPlane0 = Shader.PropertyToID("_ContactPlane0");
     static readonly int IdPlane1 = Shader.PropertyToID("_ContactPlane1");
@@ -116,6 +117,9 @@ public class ShaderDeformBlob : MonoBehaviour, IBlob
     static readonly int IdContactDepth = Shader.PropertyToID("_ContactDepth");
     static readonly int IdContactFalloff = Shader.PropertyToID("_ContactFalloff");
     static readonly int IdContactSoft = Shader.PropertyToID("_ContactSoft");
+
+    /// <summary>붙이는 쪽이 표면 위치를 구할 때 필요하다.</summary>
+    public float Radius => radius;
 
     public string DisplayName => "Shader Deform";
     public bool IsGrabbed => _grabbed;
@@ -208,6 +212,9 @@ public class ShaderDeformBlob : MonoBehaviour, IBlob
         _mat.SetFloat(IdWobbleAmount, _wobbleAmount);
         _mat.SetFloat(IdWobblePhase, _wobblePhase);
         _mat.SetFloat(IdSquash, _squash);
+        // 주파수를 셰이더 기본값에 맡기지 않고 C#에서 밀어넣는다.
+        // 그래야 CPU와 GPU가 같은 값을 쓴다.
+        _mat.SetFloat(IdWobbleFreq, wobbleFrequency);
         _mat.SetVector(IdPlane0, _plane0);
         _mat.SetVector(IdPlane1, _plane1);
         _mat.SetFloat(IdContactBulge, contactBulge);
@@ -235,6 +242,82 @@ public class ShaderDeformBlob : MonoBehaviour, IBlob
     /// 1을 넘으면 지나치지 않고 스르륵 멎는다. 손맛을 가르는 숫자라 HUD에 띄운다.
     /// </summary>
     public float DampingRatio => returnDamping / (2f * Mathf.Sqrt(Mathf.Max(returnStiffness, 1e-4f)));
+
+    // ── 변형을 CPU에서도 계산하기 (B3 얼굴 / B4 장신구) ────────────────────
+    //
+    // 셰이더의 Deform()과 **같은 식**을 C#으로 옮겨 둔 것이다. 표면에 뭘 붙이려면
+    // "그 점이 변형 후 어디로 갔나"를 CPU가 알아야 한다. 정점 수천 개가 아니라
+    // 부착점 몇 개만 계산하므로 비용은 사실상 없다.
+    //
+    // 같은 식이 두 벌이라는 게 이 방식의 대가다. 한쪽만 고치면 장신구가 표면에서
+    // 뜬다. 고칠 때는 반드시 양쪽을 같이 고칠 것. (셰이더: ShaderDeformBlob.shader)
+
+    [Tooltip("출렁임 주파수. 셰이더의 _WobbleFreq와 같은 값이어야 한다.")]
+    [SerializeField] float wobbleFrequency = 12f;
+
+    static float SmoothStep01(float t) => t * t * (3f - 2f * t);
+
+    static Vector3 ApplyPull(Vector3 p, Vector3 anchor, Vector3 vec, float amount,
+                             float grabRadius, float bodyFollow)
+    {
+        float d = Vector3.Distance(p, anchor);
+        float t = Mathf.Clamp01(1f - d / Mathf.Max(grabRadius, 1e-4f));
+        float weight = Mathf.Lerp(bodyFollow, 1f, SmoothStep01(t));
+        return p + vec * (weight * amount);
+    }
+
+    static float SoftAbove(float sd, float k) => 0.5f * (sd + Mathf.Sqrt(sd * sd + k * k));
+
+    Vector3 ApplyContactCpu(Vector3 p, Vector4 plane, float depth)
+    {
+        var n = new Vector3(plane.x, plane.y, plane.z);
+        float sd = Vector3.Dot(p, n) - plane.w;
+        if (sd >= contactFalloff) return p;
+
+        float t = Mathf.Clamp01(1f - sd / contactFalloff);
+        var lateral = p - n * Vector3.Dot(p, n);
+        p += lateral * (depth * contactBulge * SmoothStep01(t));
+
+        sd = Vector3.Dot(p, n) - plane.w + contactSoftness * 0.5f;
+        return p + n * (SoftAbove(sd, contactSoftness) - sd);
+    }
+
+    /// <summary>오브젝트 공간의 한 점이 변형 후 어디로 가는지.</summary>
+    public Vector3 DeformPoint(Vector3 p)
+    {
+        p = ApplyPull(p, _grabPointOS, _grabVector, 1f, grabRadius, bodyFollow);
+        p = ApplyPull(p, _residualPointOS, _residualVector, 1f, grabRadius, bodyFollow);
+
+        var axis = (_wobbleAxis + Vector3.one * 1e-6f).normalized;
+        float wave = Mathf.Sin(Vector3.Dot(p, axis) * 2.2f + _wobblePhase * wobbleFrequency);
+        p += axis * (wave * _wobbleAmount);
+
+        float s = _squash;
+        p = new Vector3(p.x * (1f + s * 0.5f), p.y * (1f - s), p.z * (1f + s * 0.5f));
+
+        p = ApplyContactCpu(p, _plane0, _contactDepth.x);
+        p = ApplyContactCpu(p, _plane1, _contactDepth.y);
+        return p;
+    }
+
+    /// <summary>
+    /// 변형 후 그 자리의 바깥 방향. 셰이더가 하는 것과 같게 이웃 두 점을 같이
+    /// 변형해 외적으로 구한다. 장신구를 표면에 눕히려면 이게 필요하다.
+    /// </summary>
+    public Vector3 DeformNormal(Vector3 p, Vector3 restNormal)
+    {
+        var t1 = Vector3.Normalize(Mathf.Abs(restNormal.y) < 0.99f
+            ? Vector3.Cross(restNormal, Vector3.up)
+            : Vector3.Cross(restNormal, Vector3.right));
+        var t2 = Vector3.Cross(restNormal, t1);
+
+        const float eps = 0.01f;
+        var p0 = DeformPoint(p);
+        var pa = DeformPoint(p + t1 * eps);
+        var pb = DeformPoint(p + t2 * eps);
+        var n = Vector3.Cross(pa - p0, pb - p0).normalized;
+        return Vector3.Dot(n, restNormal) < 0f ? -n : n;
+    }
 
     // ── 벽 접촉 (A3) ───────────────────────────────────────────────────────
 
