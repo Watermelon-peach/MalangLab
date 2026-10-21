@@ -85,6 +85,7 @@ Shader "MalangLab/ShaderDeformBlob"
                 float4 positionOS : POSITION;
                 float3 normalOS   : NORMAL;
                 float2 uv         : TEXCOORD0;
+                float4 color      : COLOR;   // 얼굴을 같은 메시에 넣기 위한 것 (B3)
             };
 
             struct Varyings
@@ -92,6 +93,7 @@ Shader "MalangLab/ShaderDeformBlob"
                 float4 positionCS : SV_POSITION;
                 float3 normalWS   : TEXCOORD0;
                 float3 positionWS : TEXCOORD1;
+                float4 color      : TEXCOORD2;
             };
 
             // 한 지점을 중심으로 당긴다.
@@ -196,6 +198,7 @@ Shader "MalangLab/ShaderDeformBlob"
                 o.positionWS = TransformObjectToWorld(p);
                 o.positionCS = TransformWorldToHClip(o.positionWS);
                 o.normalWS   = TransformObjectToWorldNormal(nOS);
+                o.color      = input.color;
                 return o;
             }
 
@@ -208,7 +211,10 @@ Shader "MalangLab/ShaderDeformBlob"
                 lightingInput.shadowCoord = TransformWorldToShadowCoord(input.positionWS);
 
                 SurfaceData surface = (SurfaceData)0;
-                surface.albedo = _BaseColor.rgb;
+                // 얼굴을 몸과 같은 메시에 넣는 방법. 정점이 변형되면 얼굴도
+                // 같이 변형된다 — 따로 띄우는 스프라이트로는 안 되는 것.
+                // (실제로는 정점 색 대신 텍스처를 쓴다. 정점 색은 메시 해상도만큼만 나온다.)
+                surface.albedo = _BaseColor.rgb * input.color.rgb;
                 surface.alpha = 1.0;
                 surface.smoothness = _Smoothness;
                 surface.occlusion = 1.0;
