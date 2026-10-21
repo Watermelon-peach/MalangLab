@@ -25,6 +25,10 @@ Material:
     m_TexEnvs: []
     m_Ints: []
     m_Floats:
+    - _BodyFollow: 0.35
+    - _ContactBulge: 0.9
+    - _ContactFalloff: 0.9
+    - _ContactSoft: 0.12
     - _GrabAmount: 0
     - _GrabRadius: 0.55
     - _Smoothness: 0.45
@@ -33,9 +37,14 @@ Material:
     - _WobbleFreq: 12
     - _WobblePhase: 0
     m_Colors:
-    - _BaseColor: {r: 0.6, g: 0.8, b: 1, a: 1}
+    - _BaseColor: {r: 1, g: 0.55, b: 0.62, a: 1}
+    - _ContactDepth: {r: 0, g: 0, b: 0, a: 0}
+    - _ContactPlane0: {r: 0, g: 1, b: 0, a: -1000000}
+    - _ContactPlane1: {r: 0, g: 1, b: 0, a: -1000000}
     - _GrabPoint: {r: 0, g: 0, b: 0, a: 0}
+    - _GrabPoint2: {r: 0, g: 0, b: 0, a: 0}
     - _GrabVector: {r: 0, g: 0, b: 0, a: 0}
+    - _GrabVector2: {r: 0, g: 0, b: 0, a: 0}
     - _WobbleAxis: {r: 0, g: 1, b: 0, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

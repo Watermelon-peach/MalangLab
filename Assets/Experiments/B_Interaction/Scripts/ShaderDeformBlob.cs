@@ -76,6 +76,9 @@ public class ShaderDeformBlob : MonoBehaviour, IBlob
     Vector3 _grabVelocity;
     bool _grabbed;
 
+    // 실제로 적용 중인 늘어남 한계. maxStretch를 그대로 쓰지 않는 이유는 Update 참고.
+    float _maxPullSmooth = -1f;
+
     // 직전 잡기의 잔여. 새로 잡을 때 현재 변형을 여기로 넘기고 따로 잦아들게 한다.
     // 슬롯이 하나뿐이면 변형이 남은 채로 새로 잡을 때 이전 걸 버려야 해서 툭 끊긴다.
     Vector3 _residualPointOS;
@@ -164,9 +167,17 @@ public class ShaderDeformBlob : MonoBehaviour, IBlob
             _residualVelocity = Vector3.zero;
         }
 
+        // 늘어남 한계를 그대로 적용하면, 한계가 갑자기 줄 때 당겨져 있던 양이
+        // 뚝 잘려 튄다(B2에서 Balloon 3.4 -> Bouncy 1.7로 바꾸니 2.279가 한 프레임에
+        // 0.700이 됐다). 한계만 부드럽게 옮기면 잡은 채로 수치를 바꿔도 비교가 된다.
+        // 한계가 그대로일 때는 아무 차이가 없다.
+        const float limitRate = 4f;   // 초당 이동량
         float maxPull = radius * (maxStretch - 1f);
-        if (_grabVector.magnitude > maxPull)
-            _grabVector = _grabVector.normalized * maxPull;
+        if (_maxPullSmooth < 0f) _maxPullSmooth = maxPull;
+        _maxPullSmooth = Mathf.MoveTowards(_maxPullSmooth, maxPull, limitRate * dt);
+
+        if (_grabVector.magnitude > _maxPullSmooth)
+            _grabVector = _grabVector.normalized * _maxPullSmooth;
 
         _wobblePhase += dt;
 
@@ -204,6 +215,26 @@ public class ShaderDeformBlob : MonoBehaviour, IBlob
         _mat.SetFloat(IdContactFalloff, contactFalloff);
         _mat.SetFloat(IdContactSoft, contactSoftness);
     }
+
+    // ── B2 손맛 손잡이 ─────────────────────────────────────────────────────
+    //
+    // B2는 이 값들을 만지면서 "계속 만지고 싶은" 지점을 찾는 실험이다.
+    // 프리셋을 잡는 중에 즉시 갈아끼울 수 있어야 비교가 되므로 밖으로 연다.
+    // 잡기 추종(grabStiffness/Damping)은 B1에서 정해진 입력 처리라 열지 않는다.
+
+    public float ReturnStiffness { get => returnStiffness; set => returnStiffness = value; }
+    public float ReturnDamping { get => returnDamping; set => returnDamping = value; }
+    public float MaxStretch { get => maxStretch; set => maxStretch = value; }
+    public float WobbleFromRelease { get => wobbleFromRelease; set => wobbleFromRelease = value; }
+    public float WobbleDecay { get => wobbleDecay; set => wobbleDecay = value; }
+    public float GrabRadius { get => grabRadius; set => grabRadius = value; }
+    public float BodyFollow { get => bodyFollow; set => bodyFollow = value; }
+
+    /// <summary>
+    /// 감쇠비. 1보다 작으면 되돌아올 때 지나쳤다 와서 "뽀잉"이 생기고,
+    /// 1을 넘으면 지나치지 않고 스르륵 멎는다. 손맛을 가르는 숫자라 HUD에 띄운다.
+    /// </summary>
+    public float DampingRatio => returnDamping / (2f * Mathf.Sqrt(Mathf.Max(returnStiffness, 1e-4f)));
 
     // ── 벽 접촉 (A3) ───────────────────────────────────────────────────────
 
