@@ -44,6 +44,19 @@ public class ShaderDeformBlob : MonoBehaviour, IBlob
     [Tooltip("몸 전체가 커서 쪽으로 따라가는 비율. 0이면 잡은 데만 뽑혀 나온다.")]
     [SerializeField, Range(0f, 1f)] float bodyFollow = 0.35f;
 
+    [Header("벽에 눌리기 (A3)")]
+    [Tooltip("벽에 눌린 만큼 옆으로 퍼지는 정도. 부피 보존을 흉내낸다. "
+           + "0이면 그냥 잘린 것처럼 납작해지기만 한다.")]
+    [SerializeField, Range(0f, 1.5f)] float contactBulge = 0.9f;
+
+    [Tooltip("퍼짐이 벽에서 얼마나 멀리까지 번지는지. 좁으면 접촉 테두리가 각지고, "
+           + "넓으면 몸 전체가 부푼다.")]
+    [SerializeField, Range(0.05f, 2f)] float contactFalloff = 0.9f;
+
+    [Tooltip("접촉면 모서리가 얼마나 둥근지. 0에 가까우면 칼로 자른 것처럼 되고 "
+           + "테두리에 꺾임이 생겨 노멀이 튄다. 크면 접촉면이 둥글어진다.")]
+    [SerializeField, Range(0.001f, 0.5f)] float contactSoftness = 0.12f;
+
     [Header("찌르기")]
     [Tooltip("찌를 때 주는 충격. 눌림 위치가 아니라 속도에 더한다 — "
            + "위치를 직접 바꾸면 실루엣이 통째로 튀어서 클릭마다 끊겨 보인다.")]
@@ -77,6 +90,12 @@ public class ShaderDeformBlob : MonoBehaviour, IBlob
     float _squashVelocity;
     float _wobbleTarget;
 
+    // 눌린 벽 (오브젝트 공간). w가 아주 작으면 "닿은 데 없음"이 된다.
+    static readonly Vector4 NoContact = new Vector4(0f, 1f, 0f, -1e9f);
+    Vector4 _plane0 = NoContact;
+    Vector4 _plane1 = NoContact;
+    Vector2 _contactDepth;   // 각 평면에 몸이 얼마나 파고들었나 (오브젝트 공간)
+
     static readonly int IdGrabPoint = Shader.PropertyToID("_GrabPoint");
     static readonly int IdGrabVector = Shader.PropertyToID("_GrabVector");
     static readonly int IdGrabRadius = Shader.PropertyToID("_GrabRadius");
@@ -88,6 +107,12 @@ public class ShaderDeformBlob : MonoBehaviour, IBlob
     static readonly int IdWobbleAmount = Shader.PropertyToID("_WobbleAmount");
     static readonly int IdWobblePhase = Shader.PropertyToID("_WobblePhase");
     static readonly int IdSquash = Shader.PropertyToID("_SquashAmount");
+    static readonly int IdPlane0 = Shader.PropertyToID("_ContactPlane0");
+    static readonly int IdPlane1 = Shader.PropertyToID("_ContactPlane1");
+    static readonly int IdContactBulge = Shader.PropertyToID("_ContactBulge");
+    static readonly int IdContactDepth = Shader.PropertyToID("_ContactDepth");
+    static readonly int IdContactFalloff = Shader.PropertyToID("_ContactFalloff");
+    static readonly int IdContactSoft = Shader.PropertyToID("_ContactSoft");
 
     public string DisplayName => "Shader Deform";
     public bool IsGrabbed => _grabbed;
@@ -172,6 +197,46 @@ public class ShaderDeformBlob : MonoBehaviour, IBlob
         _mat.SetFloat(IdWobbleAmount, _wobbleAmount);
         _mat.SetFloat(IdWobblePhase, _wobblePhase);
         _mat.SetFloat(IdSquash, _squash);
+        _mat.SetVector(IdPlane0, _plane0);
+        _mat.SetVector(IdPlane1, _plane1);
+        _mat.SetFloat(IdContactBulge, contactBulge);
+        _mat.SetVector(IdContactDepth, _contactDepth);
+        _mat.SetFloat(IdContactFalloff, contactFalloff);
+        _mat.SetFloat(IdContactSoft, contactSoftness);
+    }
+
+    // ── 벽 접촉 (A3) ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 눌린 벽을 월드 평면 (normal.xyz, w) 으로 받아 오브젝트 공간으로 옮겨 둔다.
+    /// 안쪽이 양수인 표현을 그대로 유지한다 — 셰이더는 음수인 정점만 민다.
+    ///
+    /// 평면이 몇 개든 셰이더가 하는 일은 같다. 벽이 화면 끝인지 작업표시줄인지
+    /// 다른 창인지는 여기서 모르고, 그래서 A3-2에서 출처만 갈아끼울 수 있다.
+    /// </summary>
+    public void SetContacts(Vector4 world0, float depth0, Vector4? world1, float depth1)
+    {
+        float scale = Mathf.Max(transform.lossyScale.x, 1e-4f);
+        _plane0 = ToObjectSpace(world0);
+        _plane1 = world1.HasValue ? ToObjectSpace(world1.Value) : NoContact;
+        _contactDepth = new Vector2(depth0 / scale, world1.HasValue ? depth1 / scale : 0f);
+    }
+
+    public void ClearContacts()
+    {
+        _plane0 = NoContact;
+        _plane1 = NoContact;
+        _contactDepth = Vector2.zero;
+    }
+
+    Vector4 ToObjectSpace(Vector4 world)
+    {
+        var n = new Vector3(world.x, world.y, world.z);
+        var nOS = transform.InverseTransformDirection(n).normalized;
+        // 월드 점 = R*(p_os * s) + t 이므로 dot(p_os, nOS) >= (w - dot(t, n)) / s
+        float scale = Mathf.Max(transform.lossyScale.x, 1e-4f);
+        float wOS = (world.w - Vector3.Dot(transform.position, n)) / scale;
+        return new Vector4(nOS.x, nOS.y, nOS.z, wOS);
     }
 
     // ── IBlob ─────────────────────────────────────────────────────────────
@@ -220,6 +285,23 @@ public class ShaderDeformBlob : MonoBehaviour, IBlob
         if (_wobbleTarget < 0.02f && _grabVector.sqrMagnitude > 1e-6f)
             _wobbleAxis = _grabVector.normalized;
         _wobbleTarget = Mathf.Max(_wobbleTarget, Mathf.Min(0.35f, localVel.magnitude * wobbleFromRelease));
+    }
+
+    /// <summary>
+    /// 벽에 부딪힌 순간의 반응. 놓을 때와 같은 출렁임 기계를 쓰되 축을 벽의 법선으로 둔다.
+    ///
+    /// 눌리는 깊이 자체는 BlobBody의 접촉 스프링이 이미 출렁이게 하고 있다.
+    /// 여기서 더하는 것은 표면의 물결 — 그게 없으면 닿는 순간 눌린 모양으로
+    /// 바뀌고 그대로 멎어서 생기가 없다.
+    ///
+    /// 위상은 절대 리셋하지 않고 축도 이미 출렁이는 중이면 그대로 둔다.
+    /// B1에서 그걸 리셋했다가 클릭할 때마다 화면이 새로고침되듯 끊겼다.
+    /// </summary>
+    public void Impact(Vector3 worldNormal, float speed)
+    {
+        if (_wobbleTarget < 0.02f)
+            _wobbleAxis = transform.InverseTransformDirection(worldNormal).normalized;
+        _wobbleTarget = Mathf.Max(_wobbleTarget, Mathf.Min(0.35f, speed * wobbleFromRelease));
     }
 
     public void Poke(Vector3 worldPoint, Vector3 direction)
