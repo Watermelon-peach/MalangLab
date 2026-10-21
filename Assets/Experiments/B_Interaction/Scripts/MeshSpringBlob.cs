@@ -16,8 +16,10 @@ using UnityEngine;
 public class MeshSpringBlob : MonoBehaviour, IBlob
 {
     [Header("메시")]
-    [Tooltip("0=12정점, 1=42, 2=162, 3=642. 실험은 2면 충분하다.")]
-    [SerializeField, Range(0, 4)] int subdivisions = 2;
+    [Tooltip("0=12정점, 1=42, 2=162, 3=642, 4=2562. 낮으면 변형했을 때 "
+           + "실루엣이 다각형으로 각지게 보인다. 162개로는 눈에 띈다. "
+           + "셰이더 변형 후보도 3이라, 비교를 공정하게 하려면 맞춰야 한다.")]
+    [SerializeField, Range(0, 4)] int subdivisions = 3;
     [SerializeField] float radius = 1f;
 
     [Header("탄성 — 이 둘의 비율이 질감을 만든다")]
@@ -62,6 +64,16 @@ public class MeshSpringBlob : MonoBehaviour, IBlob
            + "올리면 몸통째 늘어나는 느낌이 된다. 뾰족함을 없애는 두 번째 손잡이.")]
     [SerializeField, Range(0f, 1f)] float bodyFollow = 0.35f;
 
+    [Header("렌더 평활화 — 물리는 건드리지 않고 화면에 올릴 때만 편다")]
+    [Tooltip("모서리 스프링은 거리만 유지하므로 이웃 정점이 번갈아 안팎으로 "
+           + "어긋나는 고주파 떨림을 거의 막지 못한다. 노멀은 위치의 미분이라 "
+           + "눈에 안 띄는 떨림도 음영에서 크게 증폭돼 표면이 우글거려 보인다. "
+           + "0이면 끈다. 플레이 중에 이 슬라이더를 움직여 바로 비교할 수 있다.")]
+    [SerializeField, Range(0f, 1f)] float renderSmoothing = 1f;
+
+    [Tooltip("평활화를 몇 번 반복할지. 1이면 가장 거친 떨림만, 높이면 더 넓게 편다.")]
+    [SerializeField, Range(1, 3)] int smoothIterations = 2;
+
     [Header("찌르기")]
     [SerializeField] float pokeImpulse = 6f;
     [SerializeField, Range(0.1f, 2f)] float pokeRadius = 0.45f;
@@ -74,6 +86,13 @@ public class MeshSpringBlob : MonoBehaviour, IBlob
     Vector3[] _accum;       // 프레임당 힘 누적
     List<(int a, int b)> _edges;
     float[] _restLen;
+
+    // 렌더 평활화용. 이웃 목록은 정점마다 List를 두면 접근이 흩어지므로
+    // 한 줄로 펴서 시작 위치만 따로 들고 있는다.
+    int[] _nbrStart;        // 길이 = 정점 수 + 1
+    int[] _nbrList;
+    Vector3[] _render;      // 화면에 올릴 자리. _pos와 별개로 둔다
+    Vector3[] _renderTmp;
 
     // 잡기 상태
     bool _grabbed;
@@ -120,6 +139,10 @@ public class MeshSpringBlob : MonoBehaviour, IBlob
         for (int i = 0; i < _edges.Count; i++)
             _restLen[i] = Vector3.Distance(_rest[_edges[i].a], _rest[_edges[i].b]);
 
+        BuildNeighbors();
+        _render = new Vector3[_rest.Length];
+        _renderTmp = new Vector3[_rest.Length];
+
         // 잡을 때 쓸 콜라이더. 변형하면 실제 모양과 어긋나지만
         // 레이캐스트로 "대충 어디를 잡았나"를 알기엔 충분하다.
         var col = GetComponent<SphereCollider>();
@@ -137,9 +160,66 @@ public class MeshSpringBlob : MonoBehaviour, IBlob
 
         for (int s = 0; s < steps; s++) Simulate(dt);
 
-        _mesh.vertices = _pos;
+        _mesh.vertices = BuildRenderPositions();
         _mesh.RecalculateNormals();
         _mesh.RecalculateBounds();
+    }
+
+    /// <summary>모서리 목록에서 정점별 이웃 목록을 만든다.</summary>
+    void BuildNeighbors()
+    {
+        int n = _rest.Length;
+        var count = new int[n];
+        foreach (var (a, b) in _edges) { count[a]++; count[b]++; }
+
+        _nbrStart = new int[n + 1];
+        for (int i = 0; i < n; i++) _nbrStart[i + 1] = _nbrStart[i] + count[i];
+
+        _nbrList = new int[_nbrStart[n]];
+        var cursor = (int[])_nbrStart.Clone();
+        foreach (var (a, b) in _edges)
+        {
+            _nbrList[cursor[a]++] = b;
+            _nbrList[cursor[b]++] = a;
+        }
+    }
+
+    /// <summary>
+    /// 화면에 올릴 자리를 만든다. 물리 상태(_pos)는 건드리지 않는다 —
+    /// 손맛은 그대로 두고 겉모습만 펴는 것이 목적이다.
+    ///
+    /// 그냥 이웃 평균으로 당기기만 하면 반복할수록 공이 쪼그라든다.
+    /// 그래서 Taubin 방식으로, 당긴 다음 조금 더 세게 되민다. 고주파
+    /// 떨림만 깎이고 전체 크기는 유지된다.
+    /// </summary>
+    Vector3[] BuildRenderPositions()
+    {
+        if (renderSmoothing <= 0f || _nbrStart == null) return _pos;
+
+        System.Array.Copy(_pos, _render, _pos.Length);
+        float lambda = renderSmoothing * 0.5f;
+        float mu = -lambda * 1.05f;
+
+        for (int it = 0; it < smoothIterations; it++)
+        {
+            SmoothPass(lambda);
+            SmoothPass(mu);
+        }
+        return _render;
+    }
+
+    void SmoothPass(float factor)
+    {
+        for (int i = 0; i < _render.Length; i++)
+        {
+            int s = _nbrStart[i], e = _nbrStart[i + 1];
+            if (e == s) { _renderTmp[i] = _render[i]; continue; }
+
+            var sum = Vector3.zero;
+            for (int k = s; k < e; k++) sum += _render[_nbrList[k]];
+            _renderTmp[i] = _render[i] + (sum / (e - s) - _render[i]) * factor;
+        }
+        (_render, _renderTmp) = (_renderTmp, _render);
     }
 
     void Simulate(float dt)

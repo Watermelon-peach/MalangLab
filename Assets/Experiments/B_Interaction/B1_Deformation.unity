@@ -150,7 +150,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 83dd604dea0f5fb47b8e0866ad21a59f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::MeshSpringBlob
-  subdivisions: 2
+  subdivisions: 3
   radius: 1
   shapeStiffness: 70
   edgeStiffness: 150
@@ -162,6 +162,8 @@ MonoBehaviour:
   grabRadius: 1.1
   grabStrength: 0.45
   bodyFollow: 0.35
+  renderSmoothing: 1
+  smoothIterations: 2
   pokeImpulse: 6
   pokeRadius: 0.45
 --- !u!23 &213735027
